@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awsault"
+version = "1.0.0"
+description = "AWS post-compromise enumeration and analysis"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "GPL-3.0-or-later"}
+keywords = ["aws", "security", "pentest", "enumeration", "cloud"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Operating System :: OS Independent",
+    "Topic :: Security",
+    "Environment :: Console",
+]
+dependencies = [
+    "boto3>=1.26.0",
+    "botocore>=1.29.0",
+    "rich>=13.0.0",
+]
+
+[project.scripts]
+awsault = "awsault.cli:main"
+
+[project.urls]
+Repository = "https://github.com/baeziy/AWSault"
+Issues = "https://github.com/baeziy/AWSault/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
