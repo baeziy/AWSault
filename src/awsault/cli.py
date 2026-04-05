@@ -40,7 +40,7 @@ BANNER = r"""[bold red]
  |  _  | |/\| |`--. \/ _` | | | | | __|
  | | | \  /\  /\__/ / (_| | |_| | | |_
  \_| |_/\/  \/\____/ \__,_|\__,_|_|\__|
-[/bold red][dim]v{ver}[/dim]
+[/bold red][dim]v{ver} | by baeziy (mustfakmalik@gmail.com)[/dim]
 """
 
 _SEV_STYLE = {
