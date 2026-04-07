@@ -163,6 +163,20 @@ awsault --show ec2 --detail describe_instances
 
 `--detail` requires a single service in `--show` and shows the full JSON response for that API call.
 
+### Browsing deep scan data
+
+After a `--godeep` scan, you can revisit the identity recon, security findings, and loot without rescanning:
+
+```bash
+awsault --recon                 # view identity, policies, roles, and privesc paths
+awsault --findings              # view security audit findings
+awsault --loot                  # view extracted secrets and credentials
+awsault --recon --findings      # combine multiple views
+awsault --recon --findings --loot   # view everything at once
+```
+
+`--recon` shows the full identity permission map: who you are, what policies are attached, what roles you can assume, and any privilege escalation paths detected. `--findings` shows all security audit findings sorted by severity. `--loot` shows extracted secrets with their actual values.
+
 ## What `--godeep` does
 
 Five phases run back to back:
@@ -264,6 +278,9 @@ Note: `--show` and `--output` cannot be used together.
 --output FILE           export results (.json, .csv, .html)
 --show SERVICES         list allowed permissions from last scan
 --detail METHOD         view result data for a specific permission (use with --show)
+--recon                 view identity recon: policies, roles, and privesc paths
+--findings              view security audit findings from last scan
+--loot                  view extracted secrets and credentials from last scan
 --verbose               print API data during scan
 --list-services         show all supported services
 ```
