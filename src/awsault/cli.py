@@ -85,9 +85,9 @@ examples:
   awsault --recon                           view identity, policies, and privesc paths
   awsault --findings                        view security audit findings
   awsault --loot                            view extracted secrets and credentials
-  awsault --policy AssumeRole               read a policy or role document live from AWS
-  awsault --policy AssumeRole,ReadPolicy    read multiple policies at once
-  awsault --policy MyPolicy --version v2    read a specific version of a managed policy
+  awsault --policy S3Access                  read a policy or role document live from AWS
+  awsault --policy S3Access,DbRead          read multiple policies at once
+  awsault --policy S3Access --version v2    read a specific version of a managed policy
   awsault --all-policies                    list and read all policies on current identity
   awsault --list-services                   show all supported services
 """,
