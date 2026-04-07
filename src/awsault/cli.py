@@ -16,6 +16,10 @@ import time
 import argparse
 import threading
 
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 from rich.console import Console
 from rich.table import Table
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, MofNCompleteColumn
@@ -78,6 +82,9 @@ examples:
   awsault --show iam --detail list_users    view data for a specific permission
   awsault --show iam,s3,lambda              list allowed permissions across services
   awsault --output report.json              export last scan to JSON
+  awsault --recon                           view identity, policies, and privesc paths
+  awsault --findings                        view security audit findings
+  awsault --loot                            view extracted secrets and credentials
   awsault --list-services                   show all supported services
 """,
     )
@@ -92,6 +99,9 @@ examples:
     p.add_argument("--detail", default=None, metavar="METHOD", help="view result data for a specific permission (use with --show)")
     p.add_argument("--all-regions", action="store_true", help="sweep every enabled region")
     p.add_argument("--list-services", action="store_true", help="print supported services and exit")
+    p.add_argument("--recon", action="store_true", help="view identity recon: policies, roles, and privesc paths from last scan")
+    p.add_argument("--findings", action="store_true", help="view security audit findings from last scan")
+    p.add_argument("--loot", action="store_true", help="view extracted secrets and credentials from last scan")
     return p
 
 
@@ -112,6 +122,11 @@ def main():
     # --detail requires --show
     if args.detail and args.show is None:
         _die("--detail requires --show. Example: awsault --show iam --detail list_users")
+
+    # browse deep data from last scan
+    if args.recon or args.findings or args.loot:
+        _cmd_browse_deep(args)
+        return
 
     # browse mode: --show
     if args.show is not None:
@@ -185,7 +200,7 @@ def _cmd_scan(args):
 
     for rgn in regions:
         if len(regions) > 1:
-            con.print(f"[bold cyan]{'━' * 50}[/bold cyan]")
+            con.print(f"[bold cyan]{'-' * 50}[/bold cyan]")
             con.print(f"[bold cyan]Region: {rgn}[/bold cyan]\n")
             s = creds.load_session(args.profile, rgn)
         else:
@@ -336,6 +351,82 @@ def _run_loot(session, threads):
 
 
 # ---------------------------------------------------------------------------
+# Browse deep data (--recon, --findings, --loot)
+# ---------------------------------------------------------------------------
+
+def _cmd_browse_deep(args):
+    """Browse deep scan data from the last saved scan."""
+    data = store.load_scan()
+    if not data:
+        _die("No saved scan found. Run a scan with --godeep first.")
+
+    shown = False
+
+    if args.recon:
+        recon = data.get("recon")
+        if not recon:
+            # try to find recon in deep data (older scan format)
+            deep_data = data.get("deep", {})
+            for k, v in deep_data.items():
+                if k.startswith("iam_self") and v:
+                    recon = v
+                    break
+        if recon:
+            _print_recon(recon)
+            shown = True
+        else:
+            con.print("[dim]No recon data in last scan. Run with --godeep to collect identity recon.[/dim]\n")
+
+    if args.findings:
+        raw_findings = data.get("findings", [])
+        if raw_findings:
+            # rebuild Finding objects from dicts
+            findings = [audit.Finding(**f) for f in raw_findings]
+            _print_findings(findings)
+            shown = True
+        else:
+            con.print("[dim]No security findings in last scan. Run with --godeep to run the audit.[/dim]\n")
+
+    if args.loot:
+        loot_data = data.get("loot", {})
+        if loot_data:
+            _print_loot_summary(loot_data)
+            # show actual loot contents
+            for source, items in sorted(loot_data.items()):
+                if not items:
+                    continue
+                con.print(f"\n[bold cyan]{'-' * 50}[/bold cyan]")
+                con.print(f"[bold cyan]{source.upper()}[/bold cyan]  "
+                          f"[dim]({len(items)} items)[/dim]\n")
+                for item in items:
+                    name = item.get("Name") or item.get("FunctionName") or item.get("InstanceId") or "?"
+                    con.print(f"  [green]■[/green] [bold]{name}[/bold]")
+                    readable = item.get("Readable")
+                    if readable is True and item.get("Value"):
+                        val = item["Value"]
+                        if isinstance(val, str) and len(val) > 500:
+                            val = val[:500] + "..."
+                        con.print(f"    [dim]{val}[/dim]")
+                    elif readable is True and item.get("Variables"):
+                        for vk, vv in item["Variables"].items():
+                            con.print(f"    [dim]{vk} = {vv}[/dim]")
+                    elif readable is False:
+                        reason = item.get("Error", "access denied")
+                        con.print(f"    [red]Not readable:[/red] [dim]{reason}[/dim]")
+                    # show any extra metadata
+                    for meta_key in ("Arn", "Region", "Type"):
+                        if item.get(meta_key):
+                            con.print(f"    [dim]{meta_key}: {item[meta_key]}[/dim]")
+            con.print()
+            shown = True
+        else:
+            con.print("[dim]No loot data in last scan. Run with --godeep to extract loot.[/dim]\n")
+
+    if not shown:
+        con.print("[dim]No deep data available. Run: awsault --godeep[/dim]\n")
+
+
+# ---------------------------------------------------------------------------
 # Show (browse last scan)
 # ---------------------------------------------------------------------------
 
@@ -399,7 +490,7 @@ def _cmd_show(service_arg, detail_method=None):
         ok_count = sm.get("ok", 0)
         total = sm.get("total", 0)
 
-        con.print(f"\n[bold cyan]{'─' * 50}[/bold cyan]")
+        con.print(f"\n[bold cyan]{'-' * 50}[/bold cyan]")
         if ok_count == total:
             badge = "[bold green]FULL ACCESS[/bold green]"
         elif ok_count > 0:
@@ -557,7 +648,7 @@ def _print_recon(recon_data):
     if not recon_data:
         return
 
-    con.print(f"\n[bold cyan]{'━' * 50}[/bold cyan]")
+    con.print(f"\n[bold cyan]{'-' * 50}[/bold cyan]")
     con.print(f"[bold cyan]IDENTITY PERMISSION MAP[/bold cyan]\n")
 
     ptype = recon_data.get("Type", "?")
@@ -821,7 +912,7 @@ def _print_verbose(results):
         ok_calls = [c for c in sr.calls if c.status == "ok"]
         if not ok_calls:
             continue
-        con.print(f"\n[bold cyan]{'─' * 50}[/bold cyan]")
+        con.print(f"\n[bold cyan]{'-' * 50}[/bold cyan]")
         con.print(f"[bold cyan]{name.upper()}[/bold cyan]")
         for c in ok_calls:
             con.print(f"\n  [green]>[/green] [bold]{c.method}[/bold] [dim]({c.count} items)[/dim]")
