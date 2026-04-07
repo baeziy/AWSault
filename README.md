@@ -182,17 +182,19 @@ awsault --recon --findings --loot   # view everything at once
 Use `--policy` to fetch the full JSON document of any policy or role directly from AWS:
 
 ```bash
-awsault --policy AssumeRole                         # reads an inline or managed policy by name
-awsault --policy AssumeRole,ReadPolicy               # read multiple policies at once
-awsault --policy AmazonS3ReadOnlyAccess              # works with AWS managed policies too
-awsault --policy AmazonS3ReadOnlyAccess --version v2 # read a specific version of a managed policy
-awsault --policy AccountIDFromS3                     # if it's a role, shows trust policy + all attached policies
-awsault --all-policies                               # list and read all policies on current identity
+awsault --policy S3Access                            # reads an inline or managed policy by name
+awsault --policy S3Access,DbRead                     # read multiple policies at once
+awsault --policy AmazonEC2ReadOnlyAccess             # works with AWS managed policies too
+awsault --policy AmazonEC2ReadOnlyAccess --version v2 # read a specific version of a managed policy
+awsault --policy BackendRole                         # if it's a role, shows full role info + trust policy + all attached policies
+awsault --all-policies                               # dump all policies on current identity
+awsault --policy S3Access --user admin               # read a policy on a different user
+awsault --all-policies --role BackendRole            # dump all policies on a specific role
 ```
 
-AWSault automatically figures out whether the name is an inline policy, managed policy, or role. It checks the saved scan data first, then falls back to live API calls. If a specific permission is denied, it tells you exactly which IAM action you're missing instead of failing silently.
+AWSault automatically figures out whether the name is an inline policy, managed policy, or role. It checks the saved scan data first, then falls back to live API calls. Output is the full raw AWS JSON response, exactly as the AWS CLI would return it.
 
-For managed policies with multiple versions, it shows all available versions and the default. Use `--version` to read a non-default version. Use `--all-policies` to dump every policy (inline and managed) attached to the current user or role.
+Use `--user` or `--role` to target a different principal (if your credentials have permission). Use `--version` to read a non-default managed policy version. Use `--all-policies` to dump every policy (inline and managed) attached to a user or role. If a specific permission is denied, it tells you exactly which IAM action you're missing.
 
 ## What `--godeep` does
 
@@ -301,6 +303,8 @@ Note: `--show` and `--output` cannot be used together.
 --policy NAME           read policy/role documents live from AWS (comma-separated)
 --version VERSION       read a specific version of a managed policy (use with --policy)
 --all-policies          list and read all policies on the current identity
+--user USERNAME         target a different IAM user (use with --policy or --all-policies)
+--role ROLENAME         target a different IAM role (use with --policy or --all-policies)
 --verbose               print API data during scan
 --list-services         show all supported services
 ```
