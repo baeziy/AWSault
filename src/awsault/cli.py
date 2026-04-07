@@ -85,6 +85,8 @@ examples:
   awsault --recon                           view identity, policies, and privesc paths
   awsault --findings                        view security audit findings
   awsault --loot                            view extracted secrets and credentials
+  awsault --policy AssumeRole               read a policy or role document live from AWS
+  awsault --policy MyPolicy --version v2    read a specific version of a managed policy
   awsault --list-services                   show all supported services
 """,
     )
@@ -102,6 +104,8 @@ examples:
     p.add_argument("--recon", action="store_true", help="view identity recon: policies, roles, and privesc paths from last scan")
     p.add_argument("--findings", action="store_true", help="view security audit findings from last scan")
     p.add_argument("--loot", action="store_true", help="view extracted secrets and credentials from last scan")
+    p.add_argument("--policy", default=None, metavar="NAME", help="read a policy or role document live from AWS")
+    p.add_argument("--version", default=None, metavar="VERSION", help="read a specific version of a managed policy (use with --policy)")
     return p
 
 
@@ -122,6 +126,15 @@ def main():
     # --detail requires --show
     if args.detail and args.show is None:
         _die("--detail requires --show. Example: awsault --show iam --detail list_users")
+
+    # --version requires --policy
+    if args.version and args.policy is None:
+        _die("--version requires --policy. Example: awsault --policy MyPolicy --version v2")
+
+    # policy reader
+    if args.policy:
+        _cmd_policy(args.policy, args.version, args.profile, args.region)
+        return
 
     # browse deep data from last scan
     if args.recon or args.findings or args.loot:
@@ -424,6 +437,341 @@ def _cmd_browse_deep(args):
 
     if not shown:
         con.print("[dim]No deep data available. Run: awsault --godeep[/dim]\n")
+
+
+# ---------------------------------------------------------------------------
+# Policy reader (--policy)
+# ---------------------------------------------------------------------------
+
+def _cmd_policy(name, version, profile, region):
+    """Read a policy or role document live from AWS."""
+
+    # load saved scan to identify what the name refers to
+    data = store.load_scan()
+    recon = None
+    if data:
+        recon = data.get("recon")
+        if not recon:
+            deep_data = data.get("deep", {})
+            for k, v in deep_data.items():
+                if k.startswith("iam_self") and v:
+                    recon = v
+                    break
+
+    # build a session for live API calls
+    session = creds.load_session(profile, region)
+    if not session:
+        _die("Cannot load AWS credentials. Use --profile if needed.")
+
+    identity = creds.validate(session)
+    if not identity:
+        _die("Invalid AWS credentials. Cannot connect to AWS.")
+
+    iam = session.client("iam")
+
+    # figure out the current principal
+    arn = identity["Arn"]
+    # arn:aws:iam::123456789012:user/username or role/rolename
+    principal_type = None
+    principal_name = None
+    if ":user/" in arn:
+        principal_type = "user"
+        principal_name = arn.rsplit("/", 1)[-1]
+    elif ":role/" in arn or ":assumed-role/" in arn:
+        principal_type = "role"
+        principal_name = arn.rsplit("/", 1)[-1]
+
+    # check scan data for what this name might be
+    found_as = _identify_name(name, recon, iam, principal_type, principal_name)
+
+    if found_as == "inline_policy":
+        _read_inline_policy(iam, name, principal_type, principal_name)
+    elif found_as == "managed_policy":
+        _read_managed_policy(iam, name, version, recon)
+    elif found_as == "role":
+        _read_role(iam, name)
+    else:
+        con.print(f"[red]'{name}' not found as a policy or role.[/red]")
+        con.print(f"[dim]Searched: inline policies on {principal_type}/{principal_name}, "
+                  f"managed policies, and IAM roles.[/dim]\n")
+
+
+def _identify_name(name, recon, iam, principal_type, principal_name):
+    """Figure out what a name refers to: inline_policy, managed_policy, or role."""
+
+    # 1. check saved recon data first
+    if recon:
+        for pol in recon.get("Policies", []):
+            if pol["Name"] == name:
+                if pol["Type"] == "inline":
+                    return "inline_policy"
+                else:
+                    return "managed_policy"
+        for role in recon.get("AssumableRoles", []):
+            if role.get("RoleName") == name:
+                return "role"
+
+    # 2. no scan data or not found there — try live API calls
+    # try inline policy on current user/role
+    try:
+        if principal_type == "user":
+            iam.get_user_policy(UserName=principal_name, PolicyName=name)
+            return "inline_policy"
+        elif principal_type == "role":
+            iam.get_role_policy(RoleName=principal_name, PolicyName=name)
+            return "inline_policy"
+    except iam.exceptions.NoSuchEntityException:
+        pass
+    except Exception:
+        pass
+
+    # try as a role name
+    try:
+        iam.get_role(RoleName=name)
+        return "role"
+    except iam.exceptions.NoSuchEntityException:
+        pass
+    except Exception:
+        pass
+
+    # try as a managed policy (search by name)
+    arn = _find_managed_policy_arn(iam, name)
+    if arn:
+        return "managed_policy"
+
+    return None
+
+
+def _find_managed_policy_arn(iam, name):
+    """Find the ARN of a managed policy by name, checking local and AWS policies."""
+    try:
+        # try customer managed policies
+        paginator = iam.get_paginator("list_policies")
+        for page in paginator.paginate(Scope="Local"):
+            for pol in page.get("Policies", []):
+                if pol["PolicyName"] == name:
+                    return pol["Arn"]
+    except Exception:
+        pass
+
+    try:
+        # try AWS managed policies
+        paginator = iam.get_paginator("list_policies")
+        for page in paginator.paginate(Scope="AWS"):
+            for pol in page.get("Policies", []):
+                if pol["PolicyName"] == name:
+                    return pol["Arn"]
+    except Exception:
+        pass
+
+    return None
+
+
+def _read_inline_policy(iam, policy_name, principal_type, principal_name):
+    """Fetch and display an inline policy document."""
+    con.print(f"\n[bold cyan]{'-' * 50}[/bold cyan]")
+    con.print(f"[bold cyan]POLICY:[/bold cyan] [bold]{policy_name}[/bold]\n")
+
+    try:
+        if principal_type == "user":
+            resp = iam.get_user_policy(UserName=principal_name, PolicyName=policy_name)
+        elif principal_type == "role":
+            resp = iam.get_role_policy(RoleName=principal_name, PolicyName=policy_name)
+        else:
+            _die(f"Unknown principal type: {principal_type}")
+            return
+
+        doc = resp.get("PolicyDocument", {})
+        con.print(f"  [dim]Type:[/dim]        [yellow]inline[/yellow]")
+        con.print(f"  [dim]Attached to:[/dim] {principal_type}/{principal_name}\n")
+        con.print(f"[dim]{json.dumps(doc, indent=2)}[/dim]")
+    except Exception as e:
+        err = getattr(e, "response", {}).get("Error", {}).get("Code", str(e))
+        con.print(f"  [dim]Type:[/dim]        [yellow]inline[/yellow]")
+        con.print(f"  [dim]Attached to:[/dim] {principal_type}/{principal_name}\n")
+        con.print(f"  [red]Access denied[/red] [dim]-- your credentials don't have "
+                  f"iam:Get{principal_type.title()}Policy permission ({err})[/dim]")
+
+    con.print()
+
+
+def _read_managed_policy(iam, policy_name, version, recon):
+    """Fetch and display a managed policy document with version info."""
+    con.print(f"\n[bold cyan]{'-' * 50}[/bold cyan]")
+    con.print(f"[bold cyan]POLICY:[/bold cyan] [bold]{policy_name}[/bold]\n")
+
+    # find the ARN
+    policy_arn = None
+
+    # check recon data first
+    if recon:
+        for pol in recon.get("Policies", []):
+            if pol["Name"] == policy_name and pol.get("Arn"):
+                policy_arn = pol["Arn"]
+                break
+
+    if not policy_arn:
+        policy_arn = _find_managed_policy_arn(iam, policy_name)
+
+    if not policy_arn:
+        con.print(f"  [red]Could not find managed policy '{policy_name}'.[/red]\n")
+        return
+
+    # get policy metadata
+    try:
+        pol_resp = iam.get_policy(PolicyArn=policy_arn)
+        pol_meta = pol_resp["Policy"]
+        default_version = pol_meta.get("DefaultVersionId", "v1")
+        is_aws = policy_arn.startswith("arn:aws:iam::aws:policy/")
+        pol_type = "AWS managed" if is_aws else "customer managed"
+
+        con.print(f"  [dim]Type:[/dim]        [cyan]{pol_type}[/cyan]")
+        con.print(f"  [dim]ARN:[/dim]         {policy_arn}")
+
+        # find who it's attached to from recon
+        attached_to = None
+        if recon:
+            for p in recon.get("Policies", []):
+                if p["Name"] == policy_name:
+                    attached_to = p.get("AttachedTo")
+                    break
+        if attached_to:
+            con.print(f"  [dim]Attached to:[/dim] {attached_to}")
+
+    except Exception as e:
+        err = getattr(e, "response", {}).get("Error", {}).get("Code", str(e))
+        con.print(f"  [dim]ARN:[/dim]         {policy_arn}")
+        con.print(f"  [red]Access denied[/red] [dim]-- your credentials don't have "
+                  f"iam:GetPolicy permission ({err})[/dim]\n")
+        return
+
+    # list all versions
+    all_versions = []
+    try:
+        ver_resp = iam.list_policy_versions(PolicyArn=policy_arn)
+        all_versions = ver_resp.get("Versions", [])
+        version_ids = [v["VersionId"] for v in all_versions]
+        version_display = []
+        for vid in sorted(version_ids):
+            if vid == default_version:
+                version_display.append(f"{vid} (default)")
+            else:
+                version_display.append(vid)
+
+        con.print(f"  [dim]Version:[/dim]     {default_version} (default)")
+        if len(version_ids) > 1:
+            con.print(f"  [dim]Available:[/dim]   {', '.join(version_display)}")
+    except Exception:
+        con.print(f"  [dim]Version:[/dim]     {default_version} (default)")
+        con.print(f"  [dim]Available:[/dim]   [yellow]cannot list versions (iam:ListPolicyVersions denied)[/yellow]")
+
+    # fetch the requested version (or default)
+    target_version = version if version else default_version
+    con.print()
+
+    try:
+        ver_resp = iam.get_policy_version(PolicyArn=policy_arn, VersionId=target_version)
+        doc = ver_resp["PolicyVersion"]["Document"]
+        if target_version != default_version:
+            con.print(f"  [bold yellow]Showing version {target_version}[/bold yellow] "
+                      f"[dim](default is {default_version})[/dim]\n")
+        con.print(f"[dim]{json.dumps(doc, indent=2)}[/dim]")
+    except Exception as e:
+        err = getattr(e, "response", {}).get("Error", {}).get("Code", str(e))
+        con.print(f"  [red]Access denied[/red] [dim]-- your credentials don't have "
+                  f"iam:GetPolicyVersion permission ({err})[/dim]")
+
+    # tip for other versions
+    if len(all_versions) > 1 and not version:
+        other = [v["VersionId"] for v in all_versions if v["VersionId"] != default_version]
+        if other:
+            con.print(f"\n  [dim]Tip: awsault --policy {policy_name} --version {other[0]}[/dim]")
+
+    con.print()
+
+
+def _read_role(iam, role_name):
+    """Fetch and display a role's trust policy and attached policies."""
+    con.print(f"\n[bold cyan]{'-' * 50}[/bold cyan]")
+    con.print(f"[bold cyan]ROLE:[/bold cyan] [bold]{role_name}[/bold]\n")
+
+    # get role info and trust policy
+    role_arn = None
+    try:
+        role_resp = iam.get_role(RoleName=role_name)
+        role_data = role_resp["Role"]
+        role_arn = role_data.get("Arn", "")
+        trust_doc = role_data.get("AssumeRolePolicyDocument", {})
+        desc = role_data.get("Description", "")
+
+        con.print(f"  [dim]ARN:[/dim]  {role_arn}")
+        if desc:
+            con.print(f"  [dim]Desc:[/dim] {desc}")
+
+        con.print(f"\n  [bold green]Trust Policy[/bold green] [dim](who can assume this role):[/dim]\n")
+        con.print(f"[dim]{json.dumps(trust_doc, indent=2)}[/dim]")
+    except Exception as e:
+        err = getattr(e, "response", {}).get("Error", {}).get("Code", str(e))
+        con.print(f"  [bold green]Trust Policy:[/bold green]")
+        con.print(f"    [red]Access denied[/red] [dim]-- your credentials don't have "
+                  f"iam:GetRole permission ({err})[/dim]")
+
+    # get inline policies
+    con.print(f"\n  [bold green]Attached Policies:[/bold green]\n")
+
+    inline_names = []
+    try:
+        resp = iam.list_role_policies(RoleName=role_name)
+        inline_names = resp.get("PolicyNames", [])
+    except Exception as e:
+        err = getattr(e, "response", {}).get("Error", {}).get("Code", str(e))
+        con.print(f"    [yellow]Inline policies:[/yellow] [red]Access denied[/red] "
+                  f"[dim]-- requires iam:ListRolePolicies ({err})[/dim]")
+
+    for pname in inline_names:
+        try:
+            resp = iam.get_role_policy(RoleName=role_name, PolicyName=pname)
+            doc = resp.get("PolicyDocument", {})
+            con.print(f"    [yellow]>[/yellow] [bold]{pname}[/bold] [dim](inline)[/dim]\n")
+            con.print(f"[dim]{json.dumps(doc, indent=2)}[/dim]\n")
+        except Exception as e:
+            err = getattr(e, "response", {}).get("Error", {}).get("Code", str(e))
+            con.print(f"    [yellow]>[/yellow] [bold]{pname}[/bold] [dim](inline)[/dim]")
+            con.print(f"      [red]Access denied[/red] [dim]-- requires iam:GetRolePolicy ({err})[/dim]\n")
+
+    # get managed policies
+    managed = []
+    try:
+        resp = iam.list_attached_role_policies(RoleName=role_name)
+        managed = resp.get("AttachedPolicies", [])
+    except Exception as e:
+        err = getattr(e, "response", {}).get("Error", {}).get("Code", str(e))
+        con.print(f"    [yellow]Managed policies:[/yellow] [red]Access denied[/red] "
+                  f"[dim]-- requires iam:ListAttachedRolePolicies ({err})[/dim]")
+
+    for mp in managed:
+        mp_name = mp["PolicyName"]
+        mp_arn = mp["PolicyArn"]
+        is_aws = mp_arn.startswith("arn:aws:iam::aws:policy/")
+        label = "AWS managed" if is_aws else "customer managed"
+
+        try:
+            pol_resp = iam.get_policy(PolicyArn=mp_arn)
+            default_ver = pol_resp["Policy"].get("DefaultVersionId", "v1")
+            ver_resp = iam.get_policy_version(PolicyArn=mp_arn, VersionId=default_ver)
+            doc = ver_resp["PolicyVersion"]["Document"]
+            con.print(f"    [yellow]>[/yellow] [bold]{mp_name}[/bold] [dim]({label}, {default_ver})[/dim]\n")
+            con.print(f"[dim]{json.dumps(doc, indent=2)}[/dim]\n")
+        except Exception as e:
+            err = getattr(e, "response", {}).get("Error", {}).get("Code", str(e))
+            con.print(f"    [yellow]>[/yellow] [bold]{mp_name}[/bold] [dim]({label})[/dim]")
+            con.print(f"      [red]Access denied[/red] [dim]-- requires iam:GetPolicy + "
+                      f"iam:GetPolicyVersion ({err})[/dim]\n")
+
+    if not inline_names and not managed:
+        con.print(f"    [dim]No policies found (or insufficient permissions to list them)[/dim]")
+
+    con.print()
 
 
 # ---------------------------------------------------------------------------

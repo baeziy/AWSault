@@ -177,6 +177,21 @@ awsault --recon --findings --loot   # view everything at once
 
 `--recon` shows the full identity permission map: who you are, what policies are attached, what roles you can assume, and any privilege escalation paths detected. `--findings` shows all security audit findings sorted by severity. `--loot` shows extracted secrets with their actual values.
 
+### Reading policy and role documents
+
+Use `--policy` to fetch the full JSON document of any policy or role directly from AWS:
+
+```bash
+awsault --policy AssumeRole                         # reads an inline or managed policy by name
+awsault --policy AmazonS3ReadOnlyAccess              # works with AWS managed policies too
+awsault --policy AmazonS3ReadOnlyAccess --version v2 # read a specific version of a managed policy
+awsault --policy AccountIDFromS3                     # if it's a role, shows trust policy + all attached policies
+```
+
+AWSault automatically figures out whether the name is an inline policy, managed policy, or role. It checks the saved scan data first, then falls back to live API calls. If a specific permission is denied, it tells you exactly which IAM action you're missing instead of failing silently.
+
+For managed policies with multiple versions, it shows all available versions and the default. Use `--version` to read a non-default version.
+
 ## What `--godeep` does
 
 Five phases run back to back:
@@ -281,6 +296,8 @@ Note: `--show` and `--output` cannot be used together.
 --recon                 view identity recon: policies, roles, and privesc paths
 --findings              view security audit findings from last scan
 --loot                  view extracted secrets and credentials from last scan
+--policy NAME           read a policy or role document live from AWS
+--version VERSION       read a specific version of a managed policy (use with --policy)
 --verbose               print API data during scan
 --list-services         show all supported services
 ```
