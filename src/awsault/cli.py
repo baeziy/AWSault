@@ -86,7 +86,9 @@ examples:
   awsault --findings                        view security audit findings
   awsault --loot                            view extracted secrets and credentials
   awsault --policy AssumeRole               read a policy or role document live from AWS
+  awsault --policy AssumeRole,ReadPolicy    read multiple policies at once
   awsault --policy MyPolicy --version v2    read a specific version of a managed policy
+  awsault --all-policies                    list and read all policies on current identity
   awsault --list-services                   show all supported services
 """,
     )
@@ -104,8 +106,9 @@ examples:
     p.add_argument("--recon", action="store_true", help="view identity recon: policies, roles, and privesc paths from last scan")
     p.add_argument("--findings", action="store_true", help="view security audit findings from last scan")
     p.add_argument("--loot", action="store_true", help="view extracted secrets and credentials from last scan")
-    p.add_argument("--policy", default=None, metavar="NAME", help="read a policy or role document live from AWS")
+    p.add_argument("--policy", default=None, metavar="NAME", help="read policy/role documents live from AWS (comma-separated for multiple)")
     p.add_argument("--version", default=None, metavar="VERSION", help="read a specific version of a managed policy (use with --policy)")
+    p.add_argument("--all-policies", action="store_true", help="list and read all policies attached to the current identity")
     return p
 
 
@@ -131,9 +134,18 @@ def main():
     if args.version and args.policy is None:
         _die("--version requires --policy. Example: awsault --policy MyPolicy --version v2")
 
+    # --version doesn't work with multiple policies
+    if args.version and args.policy and "," in args.policy:
+        _die("--version works with a single policy, not multiple. Example: awsault --policy MyPolicy --version v2")
+
     # policy reader
     if args.policy:
         _cmd_policy(args.policy, args.version, args.profile, args.region)
+        return
+
+    # all policies
+    if args.all_policies:
+        _cmd_all_policies(args.profile, args.region)
         return
 
     # browse deep data from last scan
@@ -443,22 +455,23 @@ def _cmd_browse_deep(args):
 # Policy reader (--policy)
 # ---------------------------------------------------------------------------
 
-def _cmd_policy(name, version, profile, region):
-    """Read a policy or role document live from AWS."""
-
-    # load saved scan to identify what the name refers to
+def _load_recon():
+    """Load recon data from the saved scan."""
     data = store.load_scan()
-    recon = None
-    if data:
-        recon = data.get("recon")
-        if not recon:
-            deep_data = data.get("deep", {})
-            for k, v in deep_data.items():
-                if k.startswith("iam_self") and v:
-                    recon = v
-                    break
+    if not data:
+        return None
+    recon = data.get("recon")
+    if not recon:
+        deep_data = data.get("deep", {})
+        for k, v in deep_data.items():
+            if k.startswith("iam_self") and v:
+                recon = v
+                break
+    return recon
 
-    # build a session for live API calls
+
+def _init_policy_session(profile, region):
+    """Set up an AWS session and return (iam_client, principal_type, principal_name)."""
     session = creds.load_session(profile, region)
     if not session:
         _die("Cannot load AWS credentials. Use --profile if needed.")
@@ -469,9 +482,7 @@ def _cmd_policy(name, version, profile, region):
 
     iam = session.client("iam")
 
-    # figure out the current principal
     arn = identity["Arn"]
-    # arn:aws:iam::123456789012:user/username or role/rolename
     principal_type = None
     principal_name = None
     if ":user/" in arn:
@@ -481,19 +492,82 @@ def _cmd_policy(name, version, profile, region):
         principal_type = "role"
         principal_name = arn.rsplit("/", 1)[-1]
 
-    # check scan data for what this name might be
-    found_as = _identify_name(name, recon, iam, principal_type, principal_name)
+    return iam, principal_type, principal_name
 
-    if found_as == "inline_policy":
-        _read_inline_policy(iam, name, principal_type, principal_name)
-    elif found_as == "managed_policy":
-        _read_managed_policy(iam, name, version, recon)
-    elif found_as == "role":
-        _read_role(iam, name)
-    else:
-        con.print(f"[red]'{name}' not found as a policy or role.[/red]")
-        con.print(f"[dim]Searched: inline policies on {principal_type}/{principal_name}, "
-                  f"managed policies, and IAM roles.[/dim]\n")
+
+def _cmd_policy(name, version, profile, region):
+    """Read one or more policy/role documents live from AWS."""
+    recon = _load_recon()
+    iam, principal_type, principal_name = _init_policy_session(profile, region)
+
+    names = [n.strip() for n in name.split(",") if n.strip()]
+
+    for n in names:
+        found_as = _identify_name(n, recon, iam, principal_type, principal_name)
+
+        if found_as == "inline_policy":
+            _read_inline_policy(iam, n, principal_type, principal_name)
+        elif found_as == "managed_policy":
+            _read_managed_policy(iam, n, version, recon)
+        elif found_as == "role":
+            _read_role(iam, n)
+        else:
+            con.print(f"\n[red]'{n}' not found as a policy or role.[/red]")
+            con.print(f"[dim]Searched: inline policies on {principal_type}/{principal_name}, "
+                      f"managed policies, and IAM roles.[/dim]\n")
+
+
+def _cmd_all_policies(profile, region):
+    """List and read all policies attached to the current identity."""
+    recon = _load_recon()
+    iam, principal_type, principal_name = _init_policy_session(profile, region)
+
+    con.print(f"\n[bold cyan]{'-' * 50}[/bold cyan]")
+    con.print(f"[bold cyan]ALL POLICIES FOR:[/bold cyan] [bold]{principal_type}/{principal_name}[/bold]\n")
+
+    # collect inline policies
+    inline_names = []
+    try:
+        if principal_type == "user":
+            resp = iam.list_user_policies(UserName=principal_name)
+        else:
+            resp = iam.list_role_policies(RoleName=principal_name)
+        inline_names = resp.get("PolicyNames", [])
+    except Exception as e:
+        err = getattr(e, "response", {}).get("Error", {}).get("Code", str(e))
+        action = "iam:ListUserPolicies" if principal_type == "user" else "iam:ListRolePolicies"
+        con.print(f"  [yellow]Inline policies:[/yellow] [red]Access denied[/red] "
+                  f"[dim]-- requires {action} ({err})[/dim]\n")
+
+    # collect managed policies
+    managed = []
+    try:
+        if principal_type == "user":
+            resp = iam.list_attached_user_policies(UserName=principal_name)
+        else:
+            resp = iam.list_attached_role_policies(RoleName=principal_name)
+        managed = resp.get("AttachedPolicies", [])
+    except Exception as e:
+        err = getattr(e, "response", {}).get("Error", {}).get("Code", str(e))
+        action = "iam:ListAttachedUserPolicies" if principal_type == "user" else "iam:ListAttachedRolePolicies"
+        con.print(f"  [yellow]Managed policies:[/yellow] [red]Access denied[/red] "
+                  f"[dim]-- requires {action} ({err})[/dim]\n")
+
+    total = len(inline_names) + len(managed)
+    if total == 0 and not inline_names and not managed:
+        con.print(f"  [dim]No policies found (or insufficient permissions to list them).[/dim]\n")
+        return
+
+    con.print(f"  [bold]{total} policies found[/bold] "
+              f"[dim]({len(inline_names)} inline, {len(managed)} managed)[/dim]\n")
+
+    # display each inline policy
+    for pname in inline_names:
+        _read_inline_policy(iam, pname, principal_type, principal_name)
+
+    # display each managed policy
+    for mp in managed:
+        _read_managed_policy(iam, mp["PolicyName"], None, recon)
 
 
 def _identify_name(name, recon, iam, principal_type, principal_name):

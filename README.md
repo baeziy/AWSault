@@ -183,14 +183,16 @@ Use `--policy` to fetch the full JSON document of any policy or role directly fr
 
 ```bash
 awsault --policy AssumeRole                         # reads an inline or managed policy by name
+awsault --policy AssumeRole,ReadPolicy               # read multiple policies at once
 awsault --policy AmazonS3ReadOnlyAccess              # works with AWS managed policies too
 awsault --policy AmazonS3ReadOnlyAccess --version v2 # read a specific version of a managed policy
 awsault --policy AccountIDFromS3                     # if it's a role, shows trust policy + all attached policies
+awsault --all-policies                               # list and read all policies on current identity
 ```
 
 AWSault automatically figures out whether the name is an inline policy, managed policy, or role. It checks the saved scan data first, then falls back to live API calls. If a specific permission is denied, it tells you exactly which IAM action you're missing instead of failing silently.
 
-For managed policies with multiple versions, it shows all available versions and the default. Use `--version` to read a non-default version.
+For managed policies with multiple versions, it shows all available versions and the default. Use `--version` to read a non-default version. Use `--all-policies` to dump every policy (inline and managed) attached to the current user or role.
 
 ## What `--godeep` does
 
@@ -296,8 +298,9 @@ Note: `--show` and `--output` cannot be used together.
 --recon                 view identity recon: policies, roles, and privesc paths
 --findings              view security audit findings from last scan
 --loot                  view extracted secrets and credentials from last scan
---policy NAME           read a policy or role document live from AWS
+--policy NAME           read policy/role documents live from AWS (comma-separated)
 --version VERSION       read a specific version of a managed policy (use with --policy)
+--all-policies          list and read all policies on the current identity
 --verbose               print API data during scan
 --list-services         show all supported services
 ```
