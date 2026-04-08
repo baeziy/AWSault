@@ -204,3 +204,9 @@ def count_total_calls(targets):
     if "all" in targets:
         return sum(len(s["calls"]) for s in all_svc.values())
     return sum(len(all_svc[s]["calls"]) for s in targets if s in all_svc)
+
+
+def count_calls_for(service_names):
+    """Count API calls for a specific list of service names."""
+    all_svc = get_all_services()
+    return sum(len(all_svc[s]["calls"]) for s in service_names if s in all_svc)

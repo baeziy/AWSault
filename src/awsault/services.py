@@ -1064,3 +1064,13 @@ def get_service(name):
 def get_all_services():
     """Returns the complete services dict."""
     return SERVICES
+
+
+def get_global_service_names():
+    """Returns sorted list of service names that are region-independent."""
+    return sorted(n for n, s in SERVICES.items() if s.get("global"))
+
+
+def get_regional_service_names():
+    """Returns sorted list of service names that are region-specific."""
+    return sorted(n for n, s in SERVICES.items() if not s.get("global"))
