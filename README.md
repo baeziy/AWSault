@@ -115,6 +115,7 @@ awsault --profile staging
 awsault --godeep
 
 # full assault, all regions, export to HTML
+# global services (IAM, STS, Route53, etc.) scan once, regional services scan per-region
 awsault --godeep --all-regions --output report.html
 
 # only scan specific services
@@ -295,7 +296,7 @@ Note: `--show` and `--output` cannot be used together.
 --services iam,s3,...   scope to specific services (default: all)
 --threads N             concurrent threads (default: 10)
 --godeep                full assault: deep recon + audit + loot
---all-regions           sweep all enabled regions
+--all-regions           sweep all enabled regions (global once, regional per-region)
 --output FILE           export results (.json, .csv, .html)
 --show SERVICES         list allowed permissions from last scan
 --detail METHOD         view result data for a specific permission (use with --show)
