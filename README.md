@@ -262,6 +262,27 @@ Displays a complete breakdown of the current identity's effective permissions:
   - `PassRole` — pass high-privilege roles to services
 - **Suggested next steps** — concrete `aws` CLI commands based on discovered access, including privilege escalation commands (set-default-policy-version, attach-user-policy, etc.), role assumption, S3 access, secrets, SSM parameters, DynamoDB, and Lambda invocations
 
+**Suggested next steps (scan-based).**
+After the scan completes (with or without `--godeep`), AWSault generates context-aware AWS CLI commands for every service where at least one API call succeeded. Commands include the correct `--profile` and `--region` flags, and use the actual account ID where applicable. This covers all 121 services with 240+ suggested commands, so you always know what to try next. Example output:
+
+```
+SUGGESTED NEXT STEPS
+
+  EC2 (1/27 calls OK)
+    # List your own EC2 snapshots
+    aws ec2 describe-snapshots --owner-ids self --profile staging --region us-east-1
+    # List public snapshots from this account
+    aws ec2 describe-snapshots --owner-ids 123456789012 --include-deprecated --profile staging
+    # Try describing snapshots across other regions
+    aws ec2 describe-snapshots --owner-ids self --region us-west-2 --profile staging
+
+  DYNAMODB (1/5 calls OK)
+    # List DynamoDB tables
+    aws dynamodb list-tables --profile staging --region us-east-1
+    # Sample data from a table
+    aws dynamodb scan --table-name <table-name> --max-items 10 --profile staging --region us-east-1
+```
+
 This is designed for the real pentesting workflow: discover who you are → map what you can do → find where to escalate → get the commands to do it.
 
 ## Output formats
@@ -325,7 +346,8 @@ src/awsault/
 ├── recon/
 │   ├── deep.py             second pass resource chaining (11 chains) + privesc detection (14 techniques)
 │   ├── audit.py            security finding detection (16 rules)
-│   └── loot.py             secret and credential extraction (7 sources)
+│   ├── loot.py             secret and credential extraction (7 sources)
+│   └── suggestions.py      context-aware next-step commands (240+ commands across 121 services)
 └── output/
     └── formatters.py       JSON, CSV, and HTML export
 ```
