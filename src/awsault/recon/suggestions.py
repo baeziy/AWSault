@@ -87,7 +87,7 @@ _SUGGESTIONS = {
         ("describe_snapshots", "List public snapshots from this account",
          "aws ec2 describe-snapshots --owner-ids {account_id} --include-deprecated {p}"),
         ("describe_snapshots", "Try describing snapshots across other regions",
-         "aws ec2 describe-snapshots --owner-ids self --region us-west-2 {profile}"),
+         "aws ec2 describe-snapshots --owner-ids self --region <other-region> {profile}"),
         ("describe_volumes", "List EBS volumes (check for unencrypted)",
          "aws ec2 describe-volumes --query 'Volumes[].{{Id:VolumeId,Size:Size,Encrypted:Encrypted,State:State,AZ:AvailabilityZone}}' --output table {p}"),
         ("describe_images", "List AMIs owned by this account",

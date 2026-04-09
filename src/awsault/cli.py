@@ -208,7 +208,6 @@ def _cmd_scan(args):
         _die("Credentials are invalid or expired.")
 
     con.print(f"  [dim]profile:[/dim]  [bold]{args.profile or '(default chain)'}[/bold]")
-    con.print(f"  [dim]region:[/dim]   [bold]{region}[/bold]")
     con.print(f"  [dim]account:[/dim]  [bold]{identity['Account']}[/bold]")
     con.print(f"  [dim]arn:[/dim]      [bold]{identity['Arn']}[/bold]")
     con.print(f"  [dim]mode:[/dim]     [bold]{mode}[/bold]")
@@ -227,9 +226,10 @@ def _cmd_scan(args):
     multi_region = args.all_regions
     if multi_region:
         regions = creds.get_enabled_regions(session)
-        con.print(f"  [dim]regions:[/dim]  [bold]{len(regions)} enabled[/bold]")
+        con.print(f"  [dim]regions:[/dim]  [bold]all ({len(regions)})[/bold]")
     else:
         regions = [region]
+        con.print(f"  [dim]region:[/dim]   [bold]{region}[/bold]")
 
     con.print()
 
