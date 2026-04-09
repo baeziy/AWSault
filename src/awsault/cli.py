@@ -283,97 +283,90 @@ def _cmd_scan(args):
         if args.verbose:
             _print_verbose(quick)
     else:
-        # multi-region: scan global services once, regional per-region
-        # --- global services (once, in default region) ---
-        if target_global:
-            con.print(f"[bold cyan]{'-' * 50}[/bold cyan]")
-            con.print(f"[bold cyan]Global Services[/bold cyan]\n")
+        # --all-regions: permissions are checked once, resources are found per-region
+        #
+        # IAM permissions are region-independent. If an API call succeeds in
+        # us-east-1, it will succeed in every other region too. What changes
+        # across regions is which RESOURCES exist (instances, snapshots, etc).
+        #
+        # So the surface scan runs once to map permissions, and deep enumeration
+        # runs per-region to discover resources.
 
-            global_quick = _run_surface(session, target_global, args.threads)
-            all_quick.update(global_quick)
-            _print_summary(global_quick)
+        # --- Phase 1: Surface scan (once) ---
+        con.print(f"[bold cyan]{'-' * 50}[/bold cyan]")
+        con.print(f"[bold cyan]Permission Scan[/bold cyan]")
+        con.print(f"  [dim]IAM permissions are region-independent. Scanning once to map access.[/dim]\n")
 
-            if mode == "godeep":
-                con.print("\n[bold]Phase 2:[/bold] Deep enumeration (global)")
-                deep_results = _run_deep(session, global_quick, args.threads)
-                all_deep.update(deep_results)
+        quick = _run_surface(session, targets, args.threads)
+        all_quick.update(quick)
+        _print_summary(quick)
 
-                con.print("\n[bold]Phase 3:[/bold] Security audit (global)")
-                findings = audit.run_audit(global_quick, deep_results)
-                con.print(f"  [bold]{len(findings)}[/bold] findings detected")
-                all_findings.extend(findings)
-                _print_findings(findings)
+        if args.verbose:
+            _print_verbose(quick)
 
-                # identity recon only runs once (global)
-                recon = deep_results.get("iam_self")
-                _print_recon(recon)
+        if mode == "godeep":
+            # --- Identity recon (once, global) ---
+            con.print(f"\n[bold cyan]{'-' * 50}[/bold cyan]")
+            con.print(f"[bold cyan]Identity Recon[/bold cyan]\n")
+            con.print("[bold]Phase 2:[/bold] Deep enumeration (identity)")
+            id_deep = _run_deep(session, quick, args.threads)
+            all_deep.update(id_deep)
 
-            if args.verbose:
-                _print_verbose(global_quick)
+            recon = id_deep.get("iam_self")
+            _print_recon(recon)
 
-        # --- regional services (per region) ---
-        if target_regional:
-            agg_ok = 0
-            agg_denied = 0
-            agg_errors = 0
-            agg_total = 0
+            # --- Per-region: deep enum, audit, loot ---
+            con.print(f"\n[bold cyan]{'-' * 50}[/bold cyan]")
+            con.print(f"[bold cyan]Resource Discovery ({len(regions)} regions)[/bold cyan]")
+            con.print(f"  [dim]Permissions are the same everywhere. Now checking which regions have actual resources.[/dim]\n")
 
             for rgn in regions:
-                con.print(f"\n[bold cyan]{'-' * 50}[/bold cyan]")
-                con.print(f"[bold cyan]Region: {rgn}[/bold cyan]\n")
+                con.print(f"  [bold cyan]--- {rgn} ---[/bold cyan]")
 
                 rgn_session = creds.load_session(args.profile, rgn)
 
-                rgn_quick = _run_surface(rgn_session, target_regional, args.threads)
-                _print_summary(rgn_quick)
+                con.print(f"  [bold]Deep enumeration[/bold]")
+                deep_results = _run_deep(rgn_session, quick, args.threads)
 
-                # accumulate for aggregate
-                for sr in rgn_quick.values():
-                    agg_ok += sr.ok
-                    agg_denied += sr.denied
-                    agg_errors += sr.errors
-                    agg_total += sr.total
-
-                # store with region suffix
-                for k, v in rgn_quick.items():
-                    all_quick[f"{k} ({rgn})"] = v
-
-                if mode == "godeep":
-                    con.print(f"\n[bold]Phase 2:[/bold] Deep enumeration ({rgn})")
-                    deep_results = _run_deep(rgn_session, rgn_quick, args.threads)
+                # check if anything was found in this region
+                has_data = any(v for v in deep_results.values() if v)
+                if not has_data:
+                    con.print(f"    [dim]No resources found[/dim]")
+                else:
                     for k, v in deep_results.items():
-                        all_deep[f"{k} ({rgn})"] = v
+                        if v and k != "iam_self":
+                            all_deep[f"{k} ({rgn})"] = v
 
-                    con.print(f"\n[bold]Phase 3:[/bold] Security audit ({rgn})")
-                    findings = audit.run_audit(rgn_quick, deep_results)
-                    con.print(f"  [bold]{len(findings)}[/bold] findings detected")
+                con.print(f"  [bold]Security audit[/bold]")
+                findings = audit.run_audit(quick, deep_results)
+                if findings:
+                    con.print(f"    [bold]{len(findings)}[/bold] findings")
                     all_findings.extend(findings)
-                    if findings:
-                        _print_findings(findings)
+                else:
+                    con.print(f"    [dim]No findings[/dim]")
 
-                    con.print(f"\n[bold]Phase 4:[/bold] Loot extraction ({rgn})")
-                    loot_results = _run_loot(rgn_session, args.threads)
+                con.print(f"  [bold]Loot extraction[/bold]")
+                loot_results = _run_loot(rgn_session, args.threads)
+                has_loot = any(v for v in loot_results.values() if v)
+                if has_loot:
                     for k, v in loot_results.items():
-                        existing = all_loot.get(f"{k} ({rgn})", [])
-                        existing.extend(v)
-                        all_loot[f"{k} ({rgn})"] = existing
+                        if v:
+                            existing = all_loot.get(f"{k} ({rgn})", [])
+                            existing.extend(v)
+                            all_loot[f"{k} ({rgn})"] = existing
                     _print_loot_summary(loot_results)
+                else:
+                    con.print(f"    [dim]No loot found[/dim]")
 
-                if args.verbose:
-                    _print_verbose(rgn_quick)
+                con.print()
 
-            # aggregate summary across all regions
-            con.print(f"\n[bold cyan]{'-' * 50}[/bold cyan]")
-            con.print(f"[bold cyan]AGGREGATE (regional services across {len(regions)} regions)[/bold cyan]\n")
-            con.print(f"  [bold green]{agg_ok}[/bold green] ok / [bold red]{agg_denied}[/bold red] denied / "
-                      f"[bold yellow]{agg_errors}[/bold yellow] errors / [bold cyan]{agg_total}[/bold cyan] total\n")
+            # --- Combined findings across all regions ---
+            if all_findings:
+                con.print(f"[bold cyan]{'-' * 50}[/bold cyan]")
+                con.print(f"[bold cyan]ALL FINDINGS ({len(all_findings)} across {len(regions)} regions)[/bold cyan]\n")
+                _print_findings(all_findings)
 
-        if mode == "godeep" and all_findings:
-            con.print(f"[bold cyan]{'-' * 50}[/bold cyan]")
-            con.print(f"[bold cyan]ALL FINDINGS ({len(all_findings)})[/bold cyan]\n")
-            _print_findings(all_findings)
-
-        # suggested next steps (uses combined results across all regions)
+        # suggested next steps
         _print_scan_suggestions(all_quick, args.profile, None, identity["Account"])
 
     # build the data payload for storage and export
