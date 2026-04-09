@@ -31,6 +31,7 @@ from .core import scanner
 from .recon import deep
 from .recon import audit
 from .recon import loot
+from .recon.suggestions import generate_scan_suggestions
 from .core import store
 from .output import formatters
 from .services import get_service_names, get_all_services, get_global_service_names, get_regional_service_names
@@ -276,6 +277,9 @@ def _cmd_scan(args):
             recon = deep_results.get("iam_self")
             _print_recon(recon)
 
+        # suggested next steps (always, based on surface scan)
+        _print_scan_suggestions(quick, args.profile, region, identity["Account"])
+
         if args.verbose:
             _print_verbose(quick)
     else:
@@ -368,6 +372,9 @@ def _cmd_scan(args):
             con.print(f"[bold cyan]{'-' * 50}[/bold cyan]")
             con.print(f"[bold cyan]ALL FINDINGS ({len(all_findings)})[/bold cyan]\n")
             _print_findings(all_findings)
+
+        # suggested next steps (uses combined results across all regions)
+        _print_scan_suggestions(all_quick, args.profile, None, identity["Account"])
 
     # build the data payload for storage and export
     meta = {"account": identity["Account"], "arn": identity["Arn"],
@@ -1432,6 +1439,28 @@ def _generate_suggestions(recon_data):
                     seen.add(cmd)
 
     return suggestions
+
+
+def _print_scan_suggestions(quick, profile=None, region=None, account_id=None):
+    """Print suggested next-step commands based on scan results."""
+    suggestions = generate_scan_suggestions(quick, profile, region, account_id)
+    if not suggestions:
+        return
+
+    con.print(f"\n[bold cyan]{'-' * 50}[/bold cyan]")
+    con.print(f"[bold cyan]SUGGESTED NEXT STEPS[/bold cyan]\n")
+    con.print(f"  [dim]Based on your scan results, here are commands to investigate further.[/dim]\n")
+
+    for svc_name, ok_count, total_count, cmds in suggestions:
+        if ok_count == total_count:
+            status = "FULL ACCESS"
+        else:
+            status = f"{ok_count}/{total_count} calls OK"
+        con.print(f"  [bold green]{svc_name.upper()}[/bold green] [dim]({status})[/dim]")
+        for desc, cmd in cmds:
+            con.print(f"    [dim]# {desc}[/dim]")
+            con.print(f"    {cmd}")
+        con.print()
 
 
 def _print_verbose(results):
