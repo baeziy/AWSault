@@ -13,6 +13,7 @@ import sys
 import os
 import json
 import time
+import signal
 import argparse
 import threading
 
@@ -123,7 +124,14 @@ examples:
 # Entry point
 # ---------------------------------------------------------------------------
 
+def _handle_sigint(*_):
+    con.print("\n  [bold red]Interrupted. Exiting.[/bold red]")
+    os._exit(1)
+
+
 def main():
+    signal.signal(signal.SIGINT, _handle_sigint)
+
     parser = _build_parser()
     args = parser.parse_args()
     _banner()
